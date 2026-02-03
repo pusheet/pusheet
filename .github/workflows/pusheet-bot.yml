@@ -1,0 +1,231 @@
+import json
+import os
+import requests
+from datetime import datetime
+
+# ==========================================
+# ⚙️ НАСТРОЙКИ PUSHEET ENGINE
+# ==========================================
+DB_FILE = "database.json"
+CLIENT_ID = "iZIs9mchV7lxYDLnu7X797ps9SInC37T" # Публичный ключ SoundCloud
+SEARCH_QUERY = "2026" # Ищем свежий звук
+LIMIT = 20 # Сколько треков брать за раз
+
+# Создаем структуру папок, если её нет
+os.makedirs("releases", exist_ok=True)
+os.makedirs("artists", exist_ok=True)
+os.makedirs("css", exist_ok=True)
+
+# ==========================================
+# 1. ЗАГРУЗКА ИСТОРИИ (DATABASE)
+# ==========================================
+print("💾 Loading Database...")
+db = {"releases": {}, "artists": {}}
+
+if os.path.exists(DB_FILE):
+    try:
+        with open(DB_FILE, "r", encoding='utf-8') as f:
+            db = json.load(f)
+    except Exception as e:
+        print(f"⚠️ Database error (creating new): {e}")
+
+# ==========================================
+# 2. ПОИСК НОВИНОК (SCANNING)
+# ==========================================
+print(f"🔍 Scanning SoundCloud for '{SEARCH_QUERY}'...")
+
+try:
+    # Запрос к API: ищем треки, созданные за последние сутки
+    url = f"https://api-v2.soundcloud.com/search/tracks?q={SEARCH_QUERY}&client_id={CLIENT_ID}&limit={LIMIT}&filter.created_at=last_day"
+    response = requests.get(url, timeout=10)
+    data = response.json()
+    
+    new_count = 0
+    
+    for item in data.get('collection', []):
+        # Вытаскиваем данные
+        rid = str(item['id'])
+        aid = str(item['user']['id'])
+        title = item['title'].replace('"', '').replace("'", "")
+        artist_name = item['user']['username'].replace('"', '').replace("'", "")
+        
+        # Получаем картинку лучшего качества (500x500 вместо дефолтной)
+        raw_img = item.get('artwork_url') or item['user'].get('avatar_url', '')
+        image_url = raw_img.replace('large', 't500x500') if raw_img else "https://via.placeholder.com/500x500/000000/ff0000?text=NO+COVER"
+
+        # --- ОБНОВЛЯЕМ БАЗУ РЕЛИЗОВ ---
+        if rid not in db['releases']:
+            new_count += 1
+            db['releases'][rid] = {
+                "id": rid,
+                "title": title,
+                "artist": artist_name,
+                "artist_id": aid,
+                "image": image_url,
+                "url": item['permalink_url'],
+                "date": datetime.now().strftime("%d.%m.%Y"), # Дата добавления
+                "duration": item.get('duration', 0)
+            }
+
+        # --- ОБНОВЛЯЕМ БАЗУ АРТИСТОВ ---
+        if aid not in db['artists']:
+            # Если артиста нет, создаем
+            avatar = (item['user'].get('avatar_url') or "").replace('large', 't500x500')
+            db['artists'][aid] = {
+                "id": aid,
+                "name": artist_name,
+                "avatar": avatar,
+                "releases": [] # Список ID релизов
+            }
+        
+        # Добавляем трек в дискографию артиста, если его там нет
+        if rid not in db['artists'][aid]['releases']:
+            db['artists'][aid]['releases'].append(rid)
+
+    print(f"🔥 Found {new_count} new drops!")
+
+    # Сохраняем базу обратно в файл
+    with open(DB_FILE, "w", encoding='utf-8') as f:
+        json.dump(db, f, indent=2, ensure_ascii=False)
+
+except Exception as e:
+    print(f"❌ Error fetching data: {e}")
+
+
+# ==========================================
+# 3. ГЕНЕРАТОР САЙТА (BUILDER)
+# ==========================================
+print("🏗️ Building Pusheet Platform...")
+
+# --- Шаблон HEAD (Шрифт Dela Gothic One + CSS) ---
+def get_html_head(page_title):
+    return f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{page_title} | PUSHEET</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<nav>
+    <a href="/" class="logo">PUSHEET</a>
+</nav>
+"""
+
+# --- A. ГЕНЕРАЦИЯ СТРАНИЦ ТРЕКОВ (Releases) ---
+for rid, track in db['releases'].items():
+    html = get_html_head(f"{track['artist']} - {track['title']}")
+    html += f"""
+    <div class="container release-page">
+        <div class="cover-box">
+            <img src="{track['image']}" class="main-cover" alt="Cover">
+        </div>
+        <div class="info-box">
+            <div class="tag">FRESH DROP</div>
+            <h1>{track['title']}</h1>
+            <a href="/artists/{track['artist_id']}.html" class="artist-link">{track['artist']}</a>
+            
+            <div class="controls">
+                <a href="{track['url']}" target="_blank" class="btn-main">▶ LISTEN ON SC</a>
+            </div>
+            
+            <div class="meta-info">
+                <span>ADDED: {track['date']}</span>
+            </div>
+        </div>
+    </div>
+    </body>
+    </html>
+    """
+    with open(f"releases/{rid}.html", "w", encoding='utf-8') as f:
+        f.write(html)
+
+# --- B. ГЕНЕРАЦИЯ СТРАНИЦ АРТИСТОВ (Artists) ---
+for aid, artist in db['artists'].items():
+    html = get_html_head(artist['name'])
+    html += f"""
+    <div class="artist-header">
+        <img src="{artist['avatar']}" class="artist-avi">
+        <h1>{artist['name']}</h1>
+        <div class="tag">ARTIST</div>
+    </div>
+    <div class="container">
+        <h2 class="section-title">RELEASES</h2>
+        <div class="grid">
+    """
+    
+    # Перебираем релизы артиста (от новых к старым)
+    # Проверяем, есть ли релиз в базе (на случай очистки)
+    artist_tracks = [t for t in artist['releases'] if t in db['releases']]
+    
+    if not artist_tracks:
+        html += "<p style='color:#666'>No releases found.</p>"
+    
+    for rid in reversed(artist_tracks):
+        track = db['releases'][rid]
+        html += f"""
+        <a href="/releases/{track['id']}.html" class="card">
+            <img src="{track['image']}">
+            <div class="card-content">
+                <div class="card-title">{track['title']}</div>
+                <div class="card-date">{track['date']}</div>
+            </div>
+        </a>
+        """
+    
+    html += """
+        </div>
+    </div>
+    </body>
+    </html>
+    """
+    with open(f"artists/{aid}.html", "w", encoding='utf-8') as f:
+        f.write(html)
+
+# --- C. ГЕНЕРАЦИЯ ГЛАВНОЙ (Index) ---
+html = get_html_head("HOME")
+html += """
+<div class="container">
+    <div class="hero-banner">
+        <h2>PUSHEET MUSIC DATABASE</h2>
+        <p>TRACKING SOUNDCLOUD RELEASES 24/7</p>
+    </div>
+
+    <h2 class="section-title">LATEST DROPS</h2>
+    <div class="grid">
+"""
+
+# Сортируем все релизы: берем ключи, переворачиваем список (последние добавленные сверху)
+all_ids = list(db['releases'].keys())
+recent_ids = all_ids[::-1][:40] # Берем последние 40 штук
+
+for rid in recent_ids:
+    track = db['releases'][rid]
+    html += f"""
+    <a href="/releases/{track['id']}.html" class="card">
+        <img src="{track['image']}">
+        <div class="card-content">
+            <div class="card-title">{track['title']}</div>
+            <div class="card-artist">{track['artist']}</div>
+        </div>
+    </a>
+    """
+
+html += """
+    </div>
+    <footer style="text-align:center; padding: 50px; color: #444; font-size: 0.8rem;">
+        PUSHEET AUTOMATED ENGINE © 2026
+    </footer>
+</div>
+</body>
+</html>
+"""
+
+with open("index.html", "w", encoding='utf-8') as f:
+    f.write(html)
+
+print("✅ BUILD COMPLETE. Website updated.")
