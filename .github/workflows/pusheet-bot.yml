@@ -4,228 +4,196 @@ import requests
 from datetime import datetime
 
 # ==========================================
-# ⚙️ НАСТРОЙКИ PUSHEET ENGINE
+# ⚙️ FULL ENGINE SETTINGS
 # ==========================================
 DB_FILE = "database.json"
-CLIENT_ID = "iZIs9mchV7lxYDLnu7X797ps9SInC37T" # Публичный ключ SoundCloud
-SEARCH_QUERY = "2026" # Ищем свежий звук
-LIMIT = 20 # Сколько треков брать за раз
+CLIENT_ID = "iZIs9mchV7lxYDLnu7X797ps9SInC37T" 
+SEARCH_QUERY = "2026" 
+LIMIT = 40 # Увеличил лимит для объема
 
-# Создаем структуру папок, если её нет
-os.makedirs("releases", exist_ok=True)
-os.makedirs("artists", exist_ok=True)
+# Создаем структуру папок (Твой план)
+os.makedirs("track", exist_ok=True)
+os.makedirs("artist", exist_ok=True)
+os.makedirs("album", exist_ok=True)
 os.makedirs("css", exist_ok=True)
 
 # ==========================================
-# 1. ЗАГРУЗКА ИСТОРИИ (DATABASE)
+# 1. DATABASE SYSTEM
 # ==========================================
-print("💾 Loading Database...")
-db = {"releases": {}, "artists": {}}
+print("💾 Initializing Pusheet Database...")
+db = {"releases": {}, "artists": {}, "albums": {}}
 
 if os.path.exists(DB_FILE):
     try:
         with open(DB_FILE, "r", encoding='utf-8') as f:
             db = json.load(f)
+            print(f"✅ Loaded {len(db['releases'])} existing tracks.")
     except Exception as e:
-        print(f"⚠️ Database error (creating new): {e}")
+        print(f"⚠️ DB Load Error: {e}")
 
 # ==========================================
-# 2. ПОИСК НОВИНОК (SCANNING)
+# 2. SC SCANNER (DEEP SEARCH)
 # ==========================================
-print(f"🔍 Scanning SoundCloud for '{SEARCH_QUERY}'...")
+print(f"🔍 Searching for new 2026 sounds...")
 
 try:
-    # Запрос к API: ищем треки, созданные за последние сутки
     url = f"https://api-v2.soundcloud.com/search/tracks?q={SEARCH_QUERY}&client_id={CLIENT_ID}&limit={LIMIT}&filter.created_at=last_day"
-    response = requests.get(url, timeout=10)
+    response = requests.get(url, timeout=15)
     data = response.json()
     
-    new_count = 0
-    
+    new_tracks = 0
     for item in data.get('collection', []):
-        # Вытаскиваем данные
         rid = str(item['id'])
         aid = str(item['user']['id'])
-        title = item['title'].replace('"', '').replace("'", "")
-        artist_name = item['user']['username'].replace('"', '').replace("'", "")
         
-        # Получаем картинку лучшего качества (500x500 вместо дефолтной)
-        raw_img = item.get('artwork_url') or item['user'].get('avatar_url', '')
-        image_url = raw_img.replace('large', 't500x500') if raw_img else "https://via.placeholder.com/500x500/000000/ff0000?text=NO+COVER"
-
-        # --- ОБНОВЛЯЕМ БАЗУ РЕЛИЗОВ ---
+        # Инъекция в базу треков
         if rid not in db['releases']:
-            new_count += 1
+            new_tracks += 1
             db['releases'][rid] = {
                 "id": rid,
-                "title": title,
-                "artist": artist_name,
+                "title": item['title'].replace('"', '').replace("'", ""),
+                "artist": item['user']['username'],
                 "artist_id": aid,
-                "image": image_url,
+                "image": (item.get('artwork_url') or item['user'].get('avatar_url', '')).replace('large', 't500x500'),
                 "url": item['permalink_url'],
-                "date": datetime.now().strftime("%d.%m.%Y"), # Дата добавления
-                "duration": item.get('duration', 0)
+                "genre": item.get('genre', 'Unknown'),
+                "date_added": datetime.now().strftime("%d.%m.%Y"),
+                "sc_date": item.get('created_at', '')
             }
 
-        # --- ОБНОВЛЯЕМ БАЗУ АРТИСТОВ ---
+        # Инъекция в базу артистов
         if aid not in db['artists']:
-            # Если артиста нет, создаем
-            avatar = (item['user'].get('avatar_url') or "").replace('large', 't500x500')
             db['artists'][aid] = {
                 "id": aid,
-                "name": artist_name,
-                "avatar": avatar,
-                "releases": [] # Список ID релизов
+                "name": item['user']['username'],
+                "avatar": item['user'].get('avatar_url', '').replace('large', 't500x500'),
+                "description": item['user'].get('description', 'Pusheet Artist'),
+                "releases": []
             }
         
-        # Добавляем трек в дискографию артиста, если его там нет
         if rid not in db['artists'][aid]['releases']:
             db['artists'][aid]['releases'].append(rid)
 
-    print(f"🔥 Found {new_count} new drops!")
-
-    # Сохраняем базу обратно в файл
+    print(f"🔥 Found {new_tracks} new releases to process.")
+    
     with open(DB_FILE, "w", encoding='utf-8') as f:
         json.dump(db, f, indent=2, ensure_ascii=False)
 
 except Exception as e:
-    print(f"❌ Error fetching data: {e}")
-
+    print(f"❌ Scanner Error: {e}")
 
 # ==========================================
-# 3. ГЕНЕРАТОР САЙТА (BUILDER)
+# 3. HTML ARCHITECT (DELA GOTHIC STYLE)
 # ==========================================
-print("🏗️ Building Pusheet Platform...")
 
-# --- Шаблон HEAD (Шрифт Dela Gothic One + CSS) ---
-def get_html_head(page_title):
+def generate_header(title, depth=0):
+    # depth=1 означает, что файл в подпапке, нужно ../ для путей
+    prefix = "../" * depth
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{page_title} | PUSHEET</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <title>{title} | PUSHEET</title>
     <link href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/css/style.css">
+    <style>
+        :root {{ --red: #ff0000; --black: #000; --dark: #0a0a0a; --font: 'Dela Gothic One', cursive; }}
+        body {{ background: var(--black); color: #fff; font-family: sans-serif; margin: 0; }}
+        .font-dela {{ font-family: var(--font); text-transform: uppercase; }}
+        header {{ padding: 25px; border-bottom: 5px solid var(--red); display: flex; justify-content: space-between; align-items: center; }}
+        .logo {{ font-family: var(--font); color: var(--red); text-decoration: none; font-size: 2rem; }}
+        .container {{ max-width: 1200px; margin: 0 auto; padding: 20px; }}
+        .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; }}
+        .card {{ background: var(--dark); border: 1px solid #222; text-decoration: none; color: #fff; transition: 0.3s; }}
+        .card:hover {{ border-color: var(--red); transform: translateY(-5px); }}
+        .card img {{ width: 100%; aspect-ratio: 1; object-fit: cover; }}
+        .card-info {{ padding: 15px; }}
+        .btn-main {{ background: var(--red); color: #fff; padding: 15px 30px; text-decoration: none; display: inline-block; font-family: var(--font); }}
+        .track-hero {{ display: flex; gap: 50px; padding: 60px 0; flex-wrap: wrap; }}
+        .track-cover {{ width: 400px; height: 400px; border: 4px solid var(--red); box-shadow: 0 0 30px rgba(255,0,0,0.3); }}
+    </style>
 </head>
 <body>
-<nav>
+<header>
     <a href="/" class="logo">PUSHEET</a>
-</nav>
+</header>
 """
 
-# --- A. ГЕНЕРАЦИЯ СТРАНИЦ ТРЕКОВ (Releases) ---
-for rid, track in db['releases'].items():
-    html = get_html_head(f"{track['artist']} - {track['title']}")
+# --- ГЕНЕРАЦИЯ СТРАНИЦ ТРЕКОВ (/track/) ---
+for rid, t in db['releases'].items():
+    html = generate_header(t['title'], depth=1)
     html += f"""
-    <div class="container release-page">
-        <div class="cover-box">
-            <img src="{track['image']}" class="main-cover" alt="Cover">
-        </div>
-        <div class="info-box">
-            <div class="tag">FRESH DROP</div>
-            <h1>{track['title']}</h1>
-            <a href="/artists/{track['artist_id']}.html" class="artist-link">{track['artist']}</a>
-            
-            <div class="controls">
-                <a href="{track['url']}" target="_blank" class="btn-main">▶ LISTEN ON SC</a>
-            </div>
-            
-            <div class="meta-info">
-                <span>ADDED: {track['date']}</span>
+    <div class="container">
+        <div class="track-hero">
+            <img src="{t['image']}" class="track-cover">
+            <div class="track-data">
+                <div style="background:var(--red); padding:5px 10px; display:inline-block; font-size:12px;" class="font-dela">NEW RELEASE</div>
+                <h1 class="font-dela" style="font-size:3.5rem; margin:15px 0;">{t['title']}</h1>
+                <a href="../artist/{t['artist_id']}.html" class="font-dela" style="color:#888; text-decoration:none; font-size:1.5rem;">{t['artist']}</a>
+                <p style="margin: 30px 0; color:#555;">GENRE: {t['genre']} | ADDED: {t['date_added']}</p>
+                <a href="{t['url']}" target="_blank" class="btn-main">▶ LISTEN ON SOUNDCLOUD</a>
             </div>
         </div>
     </div>
-    </body>
-    </html>
+    </body></html>
     """
-    with open(f"releases/{rid}.html", "w", encoding='utf-8') as f:
+    with open(f"track/{rid}.html", "w", encoding='utf-8') as f:
         f.write(html)
 
-# --- B. ГЕНЕРАЦИЯ СТРАНИЦ АРТИСТОВ (Artists) ---
-for aid, artist in db['artists'].items():
-    html = get_html_head(artist['name'])
+# --- ГЕНЕРАЦИЯ СТРАНИЦ АРТИСТОВ (/artist/) ---
+for aid, art in db['artists'].items():
+    html = generate_header(art['name'], depth=1)
     html += f"""
-    <div class="artist-header">
-        <img src="{artist['avatar']}" class="artist-avi">
-        <h1>{artist['name']}</h1>
-        <div class="tag">ARTIST</div>
+    <div style="background: linear-gradient(180deg, #200 0%, #000 100%); text-align:center; padding: 80px 20px;">
+        <img src="{art['avatar']}" style="width:180px; height:180px; border-radius:50%; border:5px solid var(--red); object-fit:cover; margin-bottom:20px;">
+        <h1 class="font-dela" style="font-size:4rem; margin:0;">{art['name']}</h1>
     </div>
     <div class="container">
-        <h2 class="section-title">RELEASES</h2>
+        <h2 class="font-dela" style="border-left:8px solid var(--red); padding-left:15px; margin-bottom:40px;">DISCOGRAPHY</h2>
         <div class="grid">
     """
-    
-    # Перебираем релизы артиста (от новых к старым)
-    # Проверяем, есть ли релиз в базе (на случай очистки)
-    artist_tracks = [t for t in artist['releases'] if t in db['releases']]
-    
-    if not artist_tracks:
-        html += "<p style='color:#666'>No releases found.</p>"
-    
-    for rid in reversed(artist_tracks):
-        track = db['releases'][rid]
-        html += f"""
-        <a href="/releases/{track['id']}.html" class="card">
-            <img src="{track['image']}">
-            <div class="card-content">
-                <div class="card-title">{track['title']}</div>
-                <div class="card-date">{track['date']}</div>
-            </div>
-        </a>
-        """
-    
-    html += """
-        </div>
-    </div>
-    </body>
-    </html>
-    """
-    with open(f"artists/{aid}.html", "w", encoding='utf-8') as f:
+    for rid in reversed(art['releases']):
+        if rid in db['releases']:
+            rel = db['releases'][rid]
+            html += f"""
+            <a href="../track/{rel['id']}.html" class="card">
+                <img src="{rel['image']}">
+                <div class="card-info">
+                    <div class="font-dela" style="color:var(--red); font-size:0.9rem;">{rel['title']}</div>
+                </div>
+            </a>
+            """
+    html += "</div></div></body></html>"
+    with open(f"artist/{aid}.html", "w", encoding='utf-8') as f:
         f.write(html)
 
-# --- C. ГЕНЕРАЦИЯ ГЛАВНОЙ (Index) ---
-html = get_html_head("HOME")
+# --- ГЕНЕРАЦИЯ ГЛАВНОЙ (index.html) ---
+html = generate_header("HOME", depth=0)
 html += """
+<div style="text-align:center; padding: 100px 20px; background: #050505;">
+    <h1 class="font-dela" style="font-size:5rem; margin:0; line-height:0.9;">PUSHEET<br><span style="color:var(--red)">DATABASE</span></h1>
+    <p style="color:#444; font-weight:bold; letter-spacing:3px; margin-top:20px;">AUTOMATED MUSIC ARCHIVE 2026</p>
+</div>
 <div class="container">
-    <div class="hero-banner">
-        <h2>PUSHEET MUSIC DATABASE</h2>
-        <p>TRACKING SOUNDCLOUD RELEASES 24/7</p>
-    </div>
-
-    <h2 class="section-title">LATEST DROPS</h2>
+    <h2 class="font-dela" style="border-left:8px solid var(--red); padding-left:15px; margin-bottom:40px;">LATEST DROPS</h2>
     <div class="grid">
 """
-
-# Сортируем все релизы: берем ключи, переворачиваем список (последние добавленные сверху)
-all_ids = list(db['releases'].keys())
-recent_ids = all_ids[::-1][:40] # Берем последние 40 штук
-
-for rid in recent_ids:
-    track = db['releases'][rid]
+# Сортировка: последние добавленные треки
+sorted_ids = list(db['releases'].keys())[::-1][:50]
+for rid in sorted_ids:
+    rel = db['releases'][rid]
     html += f"""
-    <a href="/releases/{track['id']}.html" class="card">
-        <img src="{track['image']}">
-        <div class="card-content">
-            <div class="card-title">{track['title']}</div>
-            <div class="card-artist">{track['artist']}</div>
+    <a href="track/{rel['id']}.html" class="card">
+        <img src="{rel['image']}">
+        <div class="card-info">
+            <div class="font-dela" style="color:var(--red); font-size:0.8rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{rel['title']}</div>
+            <div style="font-size:0.7rem; color:#666; margin-top:5px; font-weight:bold;">{rel['artist']}</div>
         </div>
     </a>
     """
-
-html += """
-    </div>
-    <footer style="text-align:center; padding: 50px; color: #444; font-size: 0.8rem;">
-        PUSHEET AUTOMATED ENGINE © 2026
-    </footer>
-</div>
-</body>
-</html>
-"""
+html += "</div></div><footer style='padding:100px; text-align:center; color:#222;' class='font-dela'>PUSHEET SYSTEM ONLINE</footer></body></html>"
 
 with open("index.html", "w", encoding='utf-8') as f:
     f.write(html)
 
-print("✅ BUILD COMPLETE. Website updated.")
+print("✅ BUILD FINISHED: All pages generated in /track/ and /artist/.")
